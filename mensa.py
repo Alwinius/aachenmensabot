@@ -2,9 +2,7 @@
 # -*- coding: utf-8 -*-
 from bs4 import BeautifulSoup
 import configparser
-from datetime import date
-from datetime import datetime
-from datetime import timedelta
+import bs4
 import logging
 from re import match
 from mensa_db import Base
@@ -31,66 +29,51 @@ engine = create_engine('sqlite:///mensausers.sqlite')
 Base.metadata.bind = engine
 DBSession = sessionmaker(bind=engine)
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.DEBUG)
-button_list = [[InlineKeyboardButton("Mensa Arcisstr.", callback_data="421$Arcisstr"),
-                InlineKeyboardButton("Mensa Leopoldstr.", callback_data="411$Leopoldstr")],
-               [InlineKeyboardButton("Mensa Garching", callback_data="422$Garching"),
-                InlineKeyboardButton("Mensa Martinsried", callback_data="412$Martinsried")],
-               [InlineKeyboardButton("Mensa Weihenstephan", callback_data="423$Weihenstephan"),
-                InlineKeyboardButton("Mensa Pasing", callback_data="432$Pasing")]]
-names = dict([(421, "Arcisstr"), (422, "Garching"), (411, "Leopoldstr."), (412, "Martinsried"), (423, "Weihenstephan"),
-              (432, "Pasing")])
+button_list = [[InlineKeyboardButton("Mensa Academica", callback_data="academica"),
+                InlineKeyboardButton("Mensa Ahornstr.", callback_data="ahornstrasse")],
+               [InlineKeyboardButton("Mensa Bayernallee", callback_data="bayernallee"),
+                InlineKeyboardButton("Mensa Goethestr.", callback_data="goethestrasse")],
+               [InlineKeyboardButton("Mensa Eupener Str.", callback_data="eupener-strasse"),
+                InlineKeyboardButton("Mensa Südpark", callback_data="suedpark")],
+               [InlineKeyboardButton("Mensa Vita", callback_data="vita"),
+                InlineKeyboardButton("Mensa Jülich", callback_data="juelich")]
+               ]
+names = dict([("academica", "Academica"), ("ahornstrasse", "Ahornstr."), ("bayernallee", "Bayernallee"),
+              ("goethestrasse", "Goethestr."), ("eupener-strasse", "Eupener Str."),
+              ("suedpark", "Südpark"), ("vita", "Vita"), ("juelich", "Jülich")])
 
 
 def getplan(mensa):
-    day = date.today()
-    counter = 0
-    now = datetime.now()
-    if now.hour > 15 and now.date().weekday() < 5:
-        # nachmittags wochentags
-        day = day + timedelta(days=1)  # nächsten Tag anzeigen
-    if day.isoweekday() in set((6, 7)):  # falls nun wochenende ausgewählt nächsten Montag nehmen
-        day += timedelta(days=8 - day.isoweekday())
-    r = requests.get("http://www.studentenwerk-muenchen.de/mensa/speiseplan/speiseplan_" + day.isoformat() + "_" + str(
-        mensa) + "_-de.html")
-    while r.status_code == 404 and counter < 20:  # bei fehlenden Tagen immer weiter nächsten nehmen
-        day = day + timedelta(days=1)
-        counter += 1
-        r = requests.get(
-            "http://www.studentenwerk-muenchen.de/mensa/speiseplan/speiseplan_" + day.isoformat() + "_" + str(
-                mensa) + "_-de.html")
+    r = requests.get("https://www.studierendenwerk-aachen.de/speiseplaene/"+mensa+"-w.html")
     soup = BeautifulSoup(r.content, "lxml")
-    message = soup.select(".heute_" + day.isoformat() + " span")[0].getText() + ":*\n\n"
-    cont = soup.select(".c-schedule__list")
-    lastcat=""
-    for meal in cont[0].children:
-        try:
-            cat = meal.select(".stwm-artname")[0].string
-            if lastcat != cat and cat is not None:
-                message+="*"+cat+"*:\n"
-                lastcat=cat
-            mealname=meal.select(".js-schedule-dish-description")[0].find(text=True, recursive=False)
-            message += "• " + mealname
-            a=meal.select(".c-schedule__icon span")
-            if len(a)>0:
-                if "vegan" in a[0]["class"]:
-                    message += " 🥑"
-                if "fleischlos"in a[0]["class"]:
-                    message += " 🥕"
-            meat=meal.select(".u-text-sup")
-            if "S" in meat[0].getText():
-                message += "🐷"
-            if "R" in meat[0].getText():
-                message += "🐄"
-            message+= "\n"
-        except (AttributeError, IndexError):
-            pass
-    message += "\n🥑 = vegan, 🥕 = vegetarisch\n🐷 = Schwein, 🐄 = Rind"
+    today_meals = soup.select(".active-panel .menue-desc")
+    message = ""
+    for meal in today_meals:
+        mealname = meal.contents[0]
+        cleaned_mealname = "".join([t for t in mealname.contents if type(t) == bs4.element.NavigableString])
+        cleaned_mealname = " ".join(cleaned_mealname.split()) + " "
+        # now get background info
+        for img in meal.find_all("image", recursive=True):
+            url = img.get("src")
+            if url == "resources/images/inhalt/Schwein.png":
+                cleaned_mealname += "🐷"
+            elif url == "resources/images/inhalt/Geflügel.png":
+                cleaned_mealname += "🐤"
+            elif url == "resources/images/inhalt/Rind.png":
+                cleaned_mealname += "🐄"
+            elif url == "resources/images/inhalt/vegan.png":
+                cleaned_mealname += "🥑"
+            elif url == "resources/images/inhalt/OLV.png":
+                cleaned_mealname += "🥕"
+        message += cleaned_mealname + "\n"
+
+    message += "\n🥑 = vegan, 🥕 = vegetarisch\n🐷 = Schwein, 🐄 = Rind\n🐤 = Vogel"
     return message
 
 
 def send(bot, chat_id, message_id, message, reply_markup):
     try:
-        if message_id == None or message_id == 0:
+        if message_id is None or message_id == 0:
             rep = bot.sendMessage(chat_id=chat_id, text=message, reply_markup=reply_markup, parse_mode=telegram.ParseMode.MARKDOWN)
             session = DBSession()
             user = session.query(User).filter(User.id == chat_id).first()
@@ -99,7 +82,7 @@ def send(bot, chat_id, message_id, message, reply_markup):
             session.close()
             return True
         else:
-            rep=bot.editMessageText(chat_id=chat_id, text=message, message_id=message_id, reply_markup=reply_markup, parse_mode=telegram.ParseMode.MARKDOWN)
+            rep = bot.editMessageText(chat_id=chat_id, text=message, message_id=message_id, reply_markup=reply_markup, parse_mode=telegram.ParseMode.MARKDOWN)
             session = DBSession()
             user = session.query(User).filter(User.id == chat_id).first()
             user.message_id = rep.message_id
@@ -180,24 +163,24 @@ def about(bot, update):
     reply_markup = telegram.InlineKeyboardMarkup(button_list)
     bot.sendMessage(chat_id=update.message.chat_id,
                     text="Dieser Bot wurde erstellt von @Alwinius. Der Quellcode ist unter "
-                         "https://github.com/Alwinius/tummensabot verfügbar.\nWeitere interessante Bots: \n - "
-                         "@tummoodlebot\n - @mydealz_bot\n - @tumroomsbot",
+                         "https://github.com/Alwinius/aachenmensabot verfügbar.\nWeitere interessante Bots: \n - "
+                         "@tummoodlebot\n - @mydealz_bot\n - @tumroomsbot\n - @tummensabot",
                     reply_markup=reply_markup)
 
 
 def AllInline(bot, update):
     args = update.callback_query.data.split("$")
-    if int(args[0]) > 400:
+    if len(args[0]) > 4:
         # Speiseplan anzeigen
         user = checkuser(args[0], update)
         msg = getplan(args[0])
-        if int(user[0]) <= 0 or int(user[0])!=int(args[0]):
+        if len(user[0]) < 2 or user[0] != args[0]:
             custom_keyboard = [[InlineKeyboardButton("Auto-Update aktivieren", callback_data="5$1")]] + button_list
         else:
             custom_keyboard = [[InlineKeyboardButton("Auto-Update deaktivieren", callback_data="5$0")]] + button_list
         reply_markup = telegram.InlineKeyboardMarkup(custom_keyboard)
         send(bot, update.callback_query.message.chat.id, update.callback_query.message.message_id,
-             "*Mensa " + args[1] + " " + msg, reply_markup)
+             "*Mensa " + names[args[0]] + "*\n " + msg, reply_markup)
     elif int(args[0]) == 5 and len(args) > 1:
         # Benachrichtigungen ändern
         user = checkuser(0, update)
@@ -205,7 +188,7 @@ def AllInline(bot, update):
             custom_keyboard = [[InlineKeyboardButton("Auto-Update deaktivieren", callback_data="5$0")]] + button_list
             reply_markup = telegram.InlineKeyboardMarkup(custom_keyboard)
             send(bot, update.callback_query.message.chat.id, update.callback_query.message.message_id,
-                 "Auto-Update aktiviert für Mensa " + names[int(user[1])], reply_markup)
+                 "Auto-Update aktiviert für Mensa " + names[str(user[1])], reply_markup)
         else:
             custom_keyboard = [[InlineKeyboardButton("Auto-Update aktivieren", callback_data="5$1")]] + button_list
             reply_markup = telegram.InlineKeyboardMarkup(custom_keyboard)
@@ -218,22 +201,6 @@ def AllInline(bot, update):
         bot.sendMessage(text="Inlinekommando nicht erkannt.\n\nData: " + update.callback_query.data + "\n User: " + str(
             update.callback_query.message.chat), chat_id=config['DEFAULT']['AdminId'])
 
-def changedaily(bot, update):
-    checkuser(0, update)
-    st=update.message.text[5:]
-    if match(r"[0,1]{5}", st) is not None:
-        session = DBSession()
-        entry = session.query(User).filter(User.id == update.message.chat.id).first()
-        entry.dailymsg=st
-        entry.daily_selection=entry.current_selection if int(entry.current_selection) > 400 else 421
-        session.commit()
-        session.close()
-        reply_markup = telegram.InlineKeyboardMarkup(button_list)
-        bot.sendMessage(text="Auswahl gespeichert", chat_id=update.message.chat.id, reply_markup=reply_markup)
-    else:
-        reply_markup = telegram.InlineKeyboardMarkup(button_list)
-        bot.sendMessage(text="Falscher Input:"+st, chat_id=update.message.chat.id, reply_markup=reply_markup)
-
 
 updater = Updater(token=config['DEFAULT']['BotToken'])
 dispatcher = updater.dispatcher
@@ -244,16 +211,10 @@ dispatcher.add_handler(about_handler)
 inlinehandler = CallbackQueryHandler(AllInline)
 dispatcher.add_handler(inlinehandler)
 
-
-#der neue Handler für Thomas:
-thomas_handler = CommandHandler('set',changedaily)
-dispatcher.add_handler(thomas_handler)
-
 fallbackhandler = MessageHandler(Filters.all, start)
 dispatcher.add_handler(fallbackhandler)
 
-
-
-updater.start_webhook(listen='localhost', port=4215, webhook_url=config['DEFAULT']['WebhookUrl'])
+updater.start_webhook(listen='localhost', port=4216, webhook_url=config['DEFAULT']['WebhookUrl'])
+updater.bot.set_webhook(config['DEFAULT']['WebHookUrl'])
 updater.idle()
 updater.stop()
