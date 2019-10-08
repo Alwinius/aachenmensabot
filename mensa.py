@@ -42,7 +42,7 @@ names = dict([("academica", "Academica"), ("ahornstrasse", "Ahornstr."), ("bayer
               ("suedpark", "Südpark"), ("vita", "Vita"), ("juelich", "Jülich")])
 
 
-def getplan(mensa):
+def getplan(mensa, filter_mode):
     r = requests.get("https://www.studierendenwerk-aachen.de/speiseplaene/"+mensa+"-w.html")
     soup = BeautifulSoup(r.content, "lxml")
     today_meals = soup.select(".active-panel .menue-desc")
@@ -64,9 +64,18 @@ def getplan(mensa):
                 cleaned_mealname += "🥑"
             elif url == "resources/images/inhalt/OLV.png":
                 cleaned_mealname += "🥕"
+
+        if filter_mode == "vegan" and "🥑" not in cleaned_mealname:
+            continue
+        if filter_mode == "vegetarian" and ("🥕" not in cleaned_mealname and  "🥑" not in cleaned_mealname):
+            continue
+
         message += cleaned_mealname + "\n" if cleaned_mealname != "+ " else ""
-    message = "Die Mensa ist heute geschlossen." if message == "" else message
-    message += "\n🥑 = vegan, 🥕 = vegetarisch\n🐷 = Schwein, 🐄 = Rind\n🐤 = Vogel"
+    message = "Die Mensa ist heute geschlossen oder es gibt für den gewählten Filter keine Essen." if message == "" else message
+    if filter_mode == "none" or filter_mode == "vegetarian":
+        message += "\n🥑 = vegan, 🥕 = vegetarisch"
+    if filter_mode == "none":
+        message += "\n🐷 = Schwein, 🐄 = Rind\n🐤 = Vogel"
     return message
 
 
@@ -140,6 +149,32 @@ def change_notifications(session, user, task):
         return False
 
 
+def rotate_filter(session, user):
+    if user.filter_mode == "none":
+        user.filter_mode = "vegetarian"
+    elif user.filter_mode == "vegetarian":
+        user.filter_mode = "vegan"
+    else:
+        user.filter_mode = "none"
+    session.commit()
+
+
+def generate_markup(auto_update, filter_state):
+    if auto_update:
+        auto_update_row = [[InlineKeyboardButton("Auto-Update deaktivieren", callback_data="5$0")]]
+    else:
+        auto_update_row = [[InlineKeyboardButton("Auto-Update aktivieren", callback_data="5$1")]]
+
+    if filter_state == "none":
+        filter_row = [[InlineKeyboardButton("Nur vegetarisch", callback_data="1")]]
+    elif filter_state == "vegetarian":
+        filter_row = [[InlineKeyboardButton("Nur vegan", callback_data="1")]]
+    else:
+        filter_row = [[InlineKeyboardButton("Auch Tiere", callback_data="1")]]
+    keyboard = auto_update_row + button_list + filter_row
+    return telegram.InlineKeyboardMarkup(keyboard)
+
+
 def start(bot, update):
     s = DBSession()
     check_user(s, 0, update)
@@ -163,7 +198,8 @@ def about(bot, update):
 
 # selection codes
 # 5 - change notifications (second param 1 - activate, 0 - deactivate)
-# 0 - /start is called or /about is called
+# 1 - change filter_settings (none, vegetarian, vegan)
+# 0 - /start is called or /about is called (current_selection will stay the same)
 # otherwise string representing a mensa
 
 
@@ -173,27 +209,34 @@ def inline_processor(bot, update):
     if len(args[0]) > 3:
         # Speiseplan anzeigen
         user = check_user(s, args[0], update)
-        msg = getplan(args[0])
+        msg = getplan(args[0], user.filter_mode)
         if user.notifications == "disabled" or user.notifications != args[0]:
-            custom_keyboard = [[InlineKeyboardButton("Auto-Update aktivieren", callback_data="5$1")]] + button_list
+            reply_markup = generate_markup(False, user.filter_mode)
         else:
-            custom_keyboard = [[InlineKeyboardButton("Auto-Update deaktivieren", callback_data="5$0")]] + button_list
-        reply_markup = telegram.InlineKeyboardMarkup(custom_keyboard)
+            reply_markup = generate_markup(True, user.filter_mode)
         send(bot, update.callback_query.message.chat.id, update.callback_query.message.message_id,
              "*Mensa " + names[args[0]] + "*\n" + msg, reply_markup)
     elif int(args[0]) == 5 and len(args) > 1:
         # Benachrichtigungen ändern
         user = check_user(s, 0, update)
         if change_notifications(s, user, args[1]):
-            custom_keyboard = [[InlineKeyboardButton("Auto-Update deaktivieren", callback_data="5$0")]] + button_list
-            reply_markup = telegram.InlineKeyboardMarkup(custom_keyboard)
+            reply_markup = generate_markup(True, user.filter_mode)
             send(bot, update.callback_query.message.chat.id, update.callback_query.message.message_id,
                  "Auto-Update aktiviert für Mensa " + names[user.current_selection], reply_markup)
         else:
-            custom_keyboard = [[InlineKeyboardButton("Auto-Update aktivieren", callback_data="5$1")]] + button_list
-            reply_markup = telegram.InlineKeyboardMarkup(custom_keyboard)
+            reply_markup = generate_markup(False, user.filter_mode)
             send(bot, update.callback_query.message.chat.id, update.callback_query.message.message_id,
                  "Auto-Update deaktiviert", reply_markup)
+    elif int(args[0]) == 1:
+        user = check_user(s, 0, update)
+        rotate_filter(s, user)
+        msg = getplan(user.current_selection, user.filter_mode)
+        if user.notifications == "disabled" or user.notifications != args[0]:
+            reply_markup = generate_markup(False, user.filter_mode)
+        else:
+            reply_markup = generate_markup(True, user.filter_mode)
+        send(bot, update.callback_query.message.chat.id, update.callback_query.message.message_id,
+             "*Mensa " + names[user.current_selection] + "*\n" + msg, reply_markup)
     else:
         reply_markup = telegram.InlineKeyboardMarkup(button_list)
         send(bot, update.callback_query.message.chat.id, update.callback_query.message.message_id,

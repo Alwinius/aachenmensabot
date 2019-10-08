@@ -20,6 +20,7 @@ class User(Base):
     message_id = Column(Integer(), nullable=True)
     dailymsg = Column(String(5), nullable=True)
     daily_selection = Column(Integer(), nullable=True)
+    filter_mode = Column(String(5), nullable=True)
 
     def __init__(self, id, first_name, last_name, username):
         self.id = id
@@ -29,6 +30,7 @@ class User(Base):
         self.notifications = "disabled"
         self.current_selection = "0"
         self.counter = 0
+        self.filter_mode = "none"
 
 
 engine = create_engine('sqlite:///mensausers.sqlite')
