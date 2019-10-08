@@ -10,12 +10,12 @@ import requests
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 import telegram
-from telegram import InlineKeyboardButton
+from telegram import InlineKeyboardButton, Update
 from telegram.error import ChatMigrated
 from telegram.error import TimedOut
 from telegram.error import Unauthorized
 from telegram.error import BadRequest
-from telegram.ext import CallbackQueryHandler
+from telegram.ext import CallbackQueryHandler, CallbackContext
 from telegram.ext import CommandHandler
 from telegram.ext import Filters
 from telegram.ext import MessageHandler
@@ -76,7 +76,13 @@ def getplan(mensa, filter_mode):
         message += "\n🥑 = vegan, 🥕 = vegetarisch"
     if filter_mode == "none":
         message += "\n🐷 = Schwein, 🐄 = Rind\n🐤 = Vogel"
-    return message
+    today_date_element = soup.select(" .active-headline a")
+    if len(today_date_element) > 0:
+        today = today_date_element[0].text
+    else:
+        today = "geschlossenen Tag"
+
+    return [message, today]
 
 
 def send(bot, chat_id, message_id, message, reply_markup):
@@ -175,20 +181,20 @@ def generate_markup(auto_update, filter_state):
     return telegram.InlineKeyboardMarkup(keyboard)
 
 
-def start(bot, update):
+def start(update: Update, context: CallbackContext):
     s = DBSession()
     check_user(s, 0, update)
     reply_markup = telegram.InlineKeyboardMarkup(button_list)
-    send(bot, update.message.chat_id, None,
+    send(context.bot, update.message.chat_id, None,
          "Bitte über das Menü eine Mensa wählen. Informationen über diesen Bot gibt's hier /about.", reply_markup)
     s.close()
 
 
-def about(bot, update):
+def about(update: Update, context: CallbackContext):
     s = DBSession()
     check_user(s, 0, update)
     reply_markup = telegram.InlineKeyboardMarkup(button_list)
-    bot.sendMessage(chat_id=update.message.chat_id,
+    context.bot.sendMessage(chat_id=update.message.chat_id,
                     text="Dieser Bot wurde erstellt von @Alwinius. Der Quellcode ist unter "
                          "https://github.com/Alwinius/aachenmensabot verfügbar.\nWeitere interessante Bots: \n - "
                          "@tummoodlebot\n - @mydealz_bot\n - @tumroomsbot\n - @tummensabot",
@@ -203,7 +209,7 @@ def about(bot, update):
 # otherwise string representing a mensa
 
 
-def inline_processor(bot, update):
+def inline_processor(update: Update, context: CallbackContext):
     s = DBSession()
     args = update.callback_query.data.split("$")
     if len(args[0]) > 3:
@@ -214,18 +220,18 @@ def inline_processor(bot, update):
             reply_markup = generate_markup(False, user.filter_mode)
         else:
             reply_markup = generate_markup(True, user.filter_mode)
-        send(bot, update.callback_query.message.chat.id, update.callback_query.message.message_id,
-             "*Mensa " + names[args[0]] + "*\n" + msg, reply_markup)
+        send(context.bot, update.callback_query.message.chat.id, update.callback_query.message.message_id,
+             "*Mensa " + names[args[0]] + " am " + msg[1] + "*\n" + msg[0], reply_markup)
     elif int(args[0]) == 5 and len(args) > 1:
         # Benachrichtigungen ändern
         user = check_user(s, 0, update)
         if change_notifications(s, user, args[1]):
             reply_markup = generate_markup(True, user.filter_mode)
-            send(bot, update.callback_query.message.chat.id, update.callback_query.message.message_id,
+            send(context.bot, update.callback_query.message.chat.id, update.callback_query.message.message_id,
                  "Auto-Update aktiviert für Mensa " + names[user.current_selection], reply_markup)
         else:
             reply_markup = generate_markup(False, user.filter_mode)
-            send(bot, update.callback_query.message.chat.id, update.callback_query.message.message_id,
+            send(context.bot, update.callback_query.message.chat.id, update.callback_query.message.message_id,
                  "Auto-Update deaktiviert", reply_markup)
     elif int(args[0]) == 1:
         user = check_user(s, 0, update)
@@ -235,18 +241,18 @@ def inline_processor(bot, update):
             reply_markup = generate_markup(False, user.filter_mode)
         else:
             reply_markup = generate_markup(True, user.filter_mode)
-        send(bot, update.callback_query.message.chat.id, update.callback_query.message.message_id,
-             "*Mensa " + names[user.current_selection] + "*\n" + msg, reply_markup)
+        send(context.bot, update.callback_query.message.chat.id, update.callback_query.message.message_id,
+             "*Mensa " + names[args[0]] + " am " + msg[1] + "*\n" + msg[0], reply_markup)
     else:
         reply_markup = telegram.InlineKeyboardMarkup(button_list)
-        send(bot, update.callback_query.message.chat.id, update.callback_query.message.message_id,
+        send(context.bot, update.callback_query.message.chat.id, update.callback_query.message.message_id,
              "Kommando nicht erkannt", reply_markup)
-        bot.sendMessage(text="Inlinekommando nicht erkannt.\n\nData: " + update.callback_query.data + "\n User: " + str(
+        context.bot.sendMessage(text="Inlinekommando nicht erkannt.\n\nData: " + update.callback_query.data + "\n User: " + str(
             update.callback_query.message.chat), chat_id=config['DEFAULT']['AdminId'])
     s.close()
 
 
-updater = Updater(token=config['DEFAULT']['BotToken'])
+updater = Updater(token=config['DEFAULT']['BotToken'], use_context=True)
 dispatcher = updater.dispatcher
 start_handler = CommandHandler('start', start)
 dispatcher.add_handler(start_handler)

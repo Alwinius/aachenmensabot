@@ -1,0 +1,11 @@
+[Unit]
+Description=Start Mensa Bot Daemon
+
+[Service]
+WorkingDirectory=/home/alwin/bots/aachenmensabot
+Type=simple
+ExecStart=/home/alwin/bots/aachenmensabot/venv/bin/python mensa.py
+User=alwin
+
+[Install]
+WantedBy=multi-user.target
