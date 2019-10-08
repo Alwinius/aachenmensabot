@@ -1,3 +1,3 @@
 #!/bin/sh
-cd /home/alwin/bots/mensa/
-python3 mensa.py
+cd /home/alwin/bots/aachenmensabot/
+venv/bin/python3 mensa.py

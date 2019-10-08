@@ -4,7 +4,6 @@ from bs4 import BeautifulSoup
 import configparser
 import bs4
 import logging
-from re import match
 from mensa_db import Base
 from mensa_db import User
 import requests
@@ -65,8 +64,8 @@ def getplan(mensa):
                 cleaned_mealname += "🥑"
             elif url == "resources/images/inhalt/OLV.png":
                 cleaned_mealname += "🥕"
-        message += cleaned_mealname + "\n"
-
+        message += cleaned_mealname + "\n" if cleaned_mealname != "+ " else ""
+    message = "Die Mensa ist heute geschlossen." if message == "" else message
     message += "\n🥑 = vegan, 🥕 = vegetarisch\n🐷 = Schwein, 🐄 = Rind\n🐤 = Vogel"
     return message
 
@@ -111,8 +110,7 @@ def send(bot, chat_id, message_id, message, reply_markup):
         return False
 
 
-def checkuser(sel, update):
-    session = DBSession()
+def check_user(session, sel, update):
     try:
         chat = update.message.chat
     except AttributeError:
@@ -120,75 +118,77 @@ def checkuser(sel, update):
     entry = session.query(User).filter(User.id == chat.id).first()
     if not entry:
         # create entry
-        new_user = User(id=chat.id, first_name=chat.first_name, last_name=chat.last_name, username=chat.username,
-                        title=chat.title, notifications=0, current_selection="0", counter=0)
+        new_user = User(id=chat.id, first_name=chat.first_name, last_name=chat.last_name, username=chat.username)
         session.add(new_user)
         session.commit()
-        session.close()
-        return [0, 0]
+        return new_user
     else:
         entry.current_selection = sel if sel != 0 else entry.current_selection
-        presel = entry.current_selection
         entry.counter += 1
-        noti = entry.notifications
         session.commit()
-        session.close()
-        return [noti, presel]
+        return entry
 
 
-def changenotifications(update, sel, task):
-    session = DBSession()
-    entry = session.query(User).filter(User.id == update.callback_query.message.chat.id).first()
+def change_notifications(session, user, task):
     if task == "1":
-        entry.notifications = sel
+        user.notifications = user.current_selection
         session.commit()
-        session.close()
         return True
     else:
-        entry.notifications = 0
+        user.notifications = 0
         session.commit()
-        session.close()
         return False
 
 
 def start(bot, update):
-    checkuser(0, update)
+    s = DBSession()
+    check_user(s, 0, update)
     reply_markup = telegram.InlineKeyboardMarkup(button_list)
     send(bot, update.message.chat_id, None,
          "Bitte über das Menü eine Mensa wählen. Informationen über diesen Bot gibt's hier /about.", reply_markup)
+    s.close()
 
 
 def about(bot, update):
-    checkuser(0, update)
+    s = DBSession()
+    check_user(s, 0, update)
     reply_markup = telegram.InlineKeyboardMarkup(button_list)
     bot.sendMessage(chat_id=update.message.chat_id,
                     text="Dieser Bot wurde erstellt von @Alwinius. Der Quellcode ist unter "
                          "https://github.com/Alwinius/aachenmensabot verfügbar.\nWeitere interessante Bots: \n - "
                          "@tummoodlebot\n - @mydealz_bot\n - @tumroomsbot\n - @tummensabot",
                     reply_markup=reply_markup)
+    s.close()
 
 
-def AllInline(bot, update):
+# selection codes
+# 5 - change notifications (second param 1 - activate, 0 - deactivate)
+# 0 - /start is called or /about is called
+# otherwise string representing a mensa
+
+
+def inline_processor(bot, update):
+    s = DBSession()
     args = update.callback_query.data.split("$")
-    if len(args[0]) > 4:
+    if len(args[0]) > 3:
         # Speiseplan anzeigen
-        user = checkuser(args[0], update)
+        user = check_user(s, args[0], update)
         msg = getplan(args[0])
-        if len(user[0]) < 2 or user[0] != args[0]:
+        if user.notifications == "disabled" or user.notifications != args[0]:
             custom_keyboard = [[InlineKeyboardButton("Auto-Update aktivieren", callback_data="5$1")]] + button_list
         else:
             custom_keyboard = [[InlineKeyboardButton("Auto-Update deaktivieren", callback_data="5$0")]] + button_list
         reply_markup = telegram.InlineKeyboardMarkup(custom_keyboard)
         send(bot, update.callback_query.message.chat.id, update.callback_query.message.message_id,
-             "*Mensa " + names[args[0]] + "*\n " + msg, reply_markup)
+             "*Mensa " + names[args[0]] + "*\n" + msg, reply_markup)
     elif int(args[0]) == 5 and len(args) > 1:
         # Benachrichtigungen ändern
-        user = checkuser(0, update)
-        if changenotifications(update, user[1], args[1]):
+        user = check_user(s, 0, update)
+        if change_notifications(s, user, args[1]):
             custom_keyboard = [[InlineKeyboardButton("Auto-Update deaktivieren", callback_data="5$0")]] + button_list
             reply_markup = telegram.InlineKeyboardMarkup(custom_keyboard)
             send(bot, update.callback_query.message.chat.id, update.callback_query.message.message_id,
-                 "Auto-Update aktiviert für Mensa " + names[str(user[1])], reply_markup)
+                 "Auto-Update aktiviert für Mensa " + names[user.current_selection], reply_markup)
         else:
             custom_keyboard = [[InlineKeyboardButton("Auto-Update aktivieren", callback_data="5$1")]] + button_list
             reply_markup = telegram.InlineKeyboardMarkup(custom_keyboard)
@@ -200,6 +200,7 @@ def AllInline(bot, update):
              "Kommando nicht erkannt", reply_markup)
         bot.sendMessage(text="Inlinekommando nicht erkannt.\n\nData: " + update.callback_query.data + "\n User: " + str(
             update.callback_query.message.chat), chat_id=config['DEFAULT']['AdminId'])
+    s.close()
 
 
 updater = Updater(token=config['DEFAULT']['BotToken'])
@@ -208,7 +209,7 @@ start_handler = CommandHandler('start', start)
 dispatcher.add_handler(start_handler)
 about_handler = CommandHandler('about', about)
 dispatcher.add_handler(about_handler)
-inlinehandler = CallbackQueryHandler(AllInline)
+inlinehandler = CallbackQueryHandler(inline_processor)
 dispatcher.add_handler(inlinehandler)
 
 fallbackhandler = MessageHandler(Filters.all, start)
