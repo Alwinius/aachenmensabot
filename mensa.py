@@ -6,6 +6,7 @@ import bs4
 import logging
 from mensa_db import Base
 from mensa_db import User
+from meals import get_menu
 import requests
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -40,49 +41,6 @@ button_list = [[InlineKeyboardButton("Mensa Academica", callback_data="academica
 names = dict([("academica", "Academica"), ("ahornstrasse", "Ahornstr."), ("bayernallee", "Bayernallee"),
               ("goethestrasse", "Goethestr."), ("eupener-strasse", "Eupener Str."),
               ("suedpark", "Südpark"), ("vita", "Vita"), ("juelich", "Jülich")])
-
-
-def getplan(mensa, filter_mode):
-    r = requests.get("https://www.studierendenwerk-aachen.de/speiseplaene/"+mensa+"-w.html")
-    soup = BeautifulSoup(r.content, "lxml")
-    today_meals = soup.select(".active-panel .menue-desc")
-    message = ""
-    for meal in today_meals:
-        mealname = meal.contents[0]
-        cleaned_mealname = "".join([t for t in mealname.contents if type(t) == bs4.element.NavigableString])
-        cleaned_mealname = " ".join(cleaned_mealname.split()) + " "
-        # now get background info
-        for img in meal.find_all("image", recursive=True):
-            url = img.get("src")
-            if url == "resources/images/inhalt/Schwein.png":
-                cleaned_mealname += "🐷"
-            elif url == "resources/images/inhalt/Geflügel.png":
-                cleaned_mealname += "🐤"
-            elif url == "resources/images/inhalt/Rind.png":
-                cleaned_mealname += "🐄"
-            elif url == "resources/images/inhalt/vegan.png":
-                cleaned_mealname += "🥑"
-            elif url == "resources/images/inhalt/OLV.png":
-                cleaned_mealname += "🥕"
-
-        if filter_mode == "vegan" and "🥑" not in cleaned_mealname:
-            continue
-        if filter_mode == "vegetarian" and ("🥕" not in cleaned_mealname and  "🥑" not in cleaned_mealname):
-            continue
-
-        message += cleaned_mealname + "\n" if cleaned_mealname != "+ " else ""
-    message = "Die Mensa ist heute geschlossen oder es gibt für den gewählten Filter keine Essen." if message == "" else message
-    if filter_mode == "none" or filter_mode == "vegetarian":
-        message += "\n🥑 = vegan, 🥕 = vegetarisch"
-    if filter_mode == "none":
-        message += "\n🐷 = Schwein, 🐄 = Rind\n🐤 = Vogel"
-    today_date_element = soup.select(" .active-headline a")
-    if len(today_date_element) > 0:
-        today = today_date_element[0].text
-    else:
-        today = "geschlossenen Tag"
-
-    return [message, today]
 
 
 def send(bot, chat_id, message_id, message, reply_markup):
@@ -215,13 +173,17 @@ def inline_processor(update: Update, context: CallbackContext):
     if len(args[0]) > 3:
         # Speiseplan anzeigen
         user = check_user(s, args[0], update)
-        msg = getplan(args[0], user.filter_mode)
+        menu = get_menu(args[0], names[args[0]])
         if user.notifications == "disabled" or user.notifications != args[0]:
             reply_markup = generate_markup(False, user.filter_mode)
         else:
             reply_markup = generate_markup(True, user.filter_mode)
+        if menu.get_date() != "":
+            msg = "*Mensa " + menu.mensa + " am " + menu.date + "*\n" + menu.get_meals_string(user.filter_mode)
+        else:
+            msg = "Die Mensa " + menu.mensa + " ist heute geschlossen."
         send(context.bot, update.callback_query.message.chat.id, update.callback_query.message.message_id,
-             "*Mensa " + names[args[0]] + " am " + msg[1] + "*\n" + msg[0], reply_markup)
+             msg, reply_markup)
     elif int(args[0]) == 5 and len(args) > 1:
         # Benachrichtigungen ändern
         user = check_user(s, 0, update)
@@ -236,13 +198,17 @@ def inline_processor(update: Update, context: CallbackContext):
     elif int(args[0]) == 1:
         user = check_user(s, 0, update)
         rotate_filter(s, user)
-        msg = getplan(user.current_selection, user.filter_mode)
+        menu = get_menu(user.current_selection, names[user.current_selection])
         if user.notifications == "disabled" or user.notifications != args[0]:
             reply_markup = generate_markup(False, user.filter_mode)
         else:
             reply_markup = generate_markup(True, user.filter_mode)
-        send(context.bot, update.callback_query.message.chat.id, update.callback_query.message.message_id,
-             "*Mensa " + names[args[0]] + " am " + msg[1] + "*\n" + msg[0], reply_markup)
+
+        if menu.get_date() != "":
+            msg = "*Mensa " + menu.mensa + " am " + menu.date + "*\n" + menu.get_meals_string(user.filter_mode)
+        else:
+            msg = "Die Mensa " + menu.mensa + " ist heute geschlossen."
+        send(context.bot, update.callback_query.message.chat.id, update.callback_query.message.message_id, msg, reply_markup)
     else:
         reply_markup = telegram.InlineKeyboardMarkup(button_list)
         send(context.bot, update.callback_query.message.chat.id, update.callback_query.message.message_id,
