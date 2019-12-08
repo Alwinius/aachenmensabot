@@ -7,12 +7,12 @@ from meals import get_menu
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 import telegram
-from telegram import InlineKeyboardButton
 from telegram.error import ChatMigrated
 from telegram.error import NetworkError
 from telegram.error import TimedOut
 from telegram.error import Unauthorized
 from telegram.error import BadRequest
+from messaging import generate_markup
 
 engine = create_engine('sqlite:///mensausers.sqlite')
 Base.metadata.bind = engine
@@ -37,10 +37,13 @@ def send(chat_id, message_id, message, reply_markup):
             print("Updating message")
             bot.editMessageText(chat_id=chat_id, text=message, message_id=message_id, reply_markup=reply_markup, parse_mode=telegram.ParseMode.MARKDOWN)
             return True
-    except (Unauthorized, BadRequest):
+    except (Unauthorized, BadRequest) as e:
+        if "Message is not modified" in e.message:
+            # user clicked on same button twice, not an issue
+            return True
         session = DBSession()
         user = session.query(User).filter(User.id == chat_id).first()
-        user.notifications = 0
+        user.notifications = "rejected"
         bot.sendMessage(chat_id=config["DEFAULT"]["AdminID"], text="Error sending meals to "+user.first_name)
         session.commit()
         session.close()
@@ -68,21 +71,8 @@ for (mensa_id, mensa_name) in names.items():
     menus[mensa_id] = get_menu(mensa_id, mensa_name)
     print("getting plan for mensa " + mensa_name)
 
-button_list = [[InlineKeyboardButton("Auto-Update deaktivieren", callback_data="5$0")],
-                [InlineKeyboardButton("Mensa Academica", callback_data="academica"),
-                InlineKeyboardButton("Mensa Ahornstr.", callback_data="ahornstrasse")],
-               [InlineKeyboardButton("Mensa Bayernallee", callback_data="bayernallee"),
-                InlineKeyboardButton("Mensa Goethestr.", callback_data="goethestrasse")],
-               [InlineKeyboardButton("Mensa Eupener Str.", callback_data="eupener-strasse"),
-                InlineKeyboardButton("Mensa Südpark", callback_data="suedpark")],
-               [InlineKeyboardButton("Mensa Vita", callback_data="vita"),
-                InlineKeyboardButton("Mensa Jülich", callback_data="juelich")]
-               ]
-
-reply_markup = telegram.InlineKeyboardMarkup(button_list)	
-
 session = DBSession()
-entries = session.query(User).filter(User.notifications != 0)
+entries = session.query(User).filter(User.notifications != "disabled").filter(User.notifications != "rejected")
 
 for user in entries:
     user.counter += 1
@@ -92,6 +82,6 @@ for user in entries:
         msg = "*Mensa " + menus[user.notifications].mensa + " am " + menus[user.notifications].date + "*\n" + menus[user.notifications].get_meals_string(user.filter_mode)
     else:
         msg = "Die Mensa " + menus[user.notifications].mensa + " ist heute geschlossen."
-
+    reply_markup = generate_markup(True, user.filter_mode)
     send(user.id, user.message_id, msg, reply_markup)
 session.close()
